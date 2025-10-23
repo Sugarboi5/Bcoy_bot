@@ -4,10 +4,11 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from keep_alive import keep_alive  # Keeps bot online
 
 # ========================================================
-# 1️⃣  Define your TOKEN first (before using it)
+# 1️⃣  Get TOKEN from environment variable (secure)
 # ========================================================
-TOKEN = "7230688408:AAFepfma6tYPuVc3guaZxgbWo1p4PXILdgg"  # Replace with your actual bot token
-# ⚠️ Tip: Later move this to Replit Secrets (key: BOT_TOKEN)
+TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("BOT_TOKEN not found in environment variables. Please add it to Replit Secrets.")
 
 # ========================================================
 # 2️⃣  Main menu generator (used multiple times)
