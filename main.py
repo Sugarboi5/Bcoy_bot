@@ -1,17 +1,18 @@
 import os
+import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from keep_alive import keep_alive  # Keeps bot online
 
 # ========================================================
-# 1️⃣  Get TOKEN from environment variable (secure)
+# 1️⃣  Load BOT_TOKEN safely
 # ========================================================
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("BOT_TOKEN not found in environment variables. Please add it to Replit Secrets.")
+    raise ValueError("❌ BOT_TOKEN not found in environment variables!")
 
 # ========================================================
-# 2️⃣  Main menu generator (used multiple times)
+# 2️⃣  Inline Keyboard Menu
 # ========================================================
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
@@ -26,22 +27,21 @@ def main_menu_keyboard():
     ])
 
 # ========================================================
-# 3️⃣  Define your command functions
+# 3️⃣  Start Command
 # ========================================================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Choose an item from the menu:",
         reply_markup=main_menu_keyboard()
     )
 
 # ========================================================
-# 4️⃣  Define button responses
+# 4️⃣  Button Handler
 # ========================================================
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    # If user presses "menu", reload main menu
     if query.data == "menu":
         await query.edit_message_text(
             text="Choose an item from the menu:",
@@ -133,16 +133,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # 5️⃣  Run the bot
 # ========================================================
 def main():
-    # Start the Flask keep-alive server
+    # Start Flask keep-alive
     keep_alive()
 
-    # Create and start the Telegram bot
+    # Build the Telegram app
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
 
-    print("✅ Bot is now running...")
-    application.run_polling()
+    # Auto-restart loop
+    while True:
+        try:
+            print("🚀 Bot is now running...")
+            application.run_polling(allowed_updates=Update.ALL_TYPES)
+        except Exception as e:
+            print(f"⚠️ Bot crashed: {e}")
+            print("🔁 Restarting in 10 seconds...")
+            time.sleep(10)
 
 if __name__ == "__main__":
     main()
