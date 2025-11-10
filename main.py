@@ -139,26 +139,33 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 5️⃣  Run the bot (Render-Optimized)
 # ========================================================
 def main():
-    # Run Flask keep_alive server in background
-    threading.Thread(target=keep_alive).start()
+    from keep_alive import keep_alive
+    import time
+    from telegram.error import NetworkError
+    keep_alive()
 
-    async def run_bot():
-        application = Application.builder().token(TOKEN).build()
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CallbackQueryHandler(button_handler))
+    application = Application.builder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))
 
-        print("🚀 Cleaning old webhooks...")
-        await application.bot.delete_webhook(drop_pending_updates=True)
+    print("✅ Cleaning any existing webhooks...")
+    try:
+        import requests
+        requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
+    except Exception as e:
+        print("⚠️ Could not delete webhook:", e)
 
-        print("✅ Bot is now running...")
-        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+    print("🚀 Bot is now running...")
 
+    # Poll forever, even if Render sleeps/restarts
     while True:
         try:
-            asyncio.run(run_bot())
+            application.run_polling(allowed_updates=Update.ALL_TYPES)
+        except NetworkError:
+            print("🌐 Network error, retrying in 10s...")
+            time.sleep(10)
         except Exception as e:
             print(f"⚠️ Bot crashed: {e}")
-            print("🔁 Restarting in 10 seconds...")
             time.sleep(10)
 
 if __name__ == "__main__":
