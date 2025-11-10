@@ -1,24 +1,25 @@
 import os
 import time
+import threading
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
-    ContextTypes
+    ContextTypes,
 )
-from keep_alive import keep_alive  # Keeps the bot alive on Render
+from keep_alive import keep_alive  # keeps the Render service active
 
 # ========================================================
-# 1️⃣  Load BOT_TOKEN securely
+# 1️⃣  Load BOT_TOKEN safely
 # ========================================================
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ BOT_TOKEN not found in environment variables!")
 
 # ========================================================
-# 2️⃣  Main Menu Layout
+# 2️⃣  Inline Keyboard Menu
 # ========================================================
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
@@ -58,58 +59,69 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     responses = {
         "item1": (
             "**Minimum Force Level (MFL)**\n\n"
-            "The MFL must always be maintained, and any changes require CO approval.\n\n"
-            "The Chief Operator may delegate but remains responsible for assignments.\n\n"
-            "**MFL Table:**\n"
-            "| Day | AM Shift | PM Shift |\n"
-            "|------|-----------|-----------|\n"
-            "| Weekday | 7 | 6 |\n"
-            "| Weekend/PH | 8 | 6 |\n"
-            "| Flight | +1 | +2 |\n\n"
-            "**If MFL not met:**\n"
-            "- Inform CE (Ops) and CX (Manpower)\n"
-            "- Give reason, personnel involved, and Ops situation\n\n"
-            "**Mitigation:**\n"
-            "- Reallocate duties\n"
-            "- Retain personnel if needed"
+            "The MFL must always be maintained, and any changes to the MFL require approval from the Commanding Officer.\n\n"
+            "The Chief Operator may delegate tasks but remains responsible for the hunters' assignment."
+            " The assignment must be recorded in the designated Ops manning record for accountability and monitoring.\n\n"
+            "**MFL Table:**\n\n"
+            "| Day         | Day (AM) Shift | Stagger (PM Shift) |\n"
+            "|--------------|----------------|--------------------|\n"
+            "| Weekday    | 7            | 6                |\n"
+            "| Weekend/PH | 8            | 6                |\n"
+            "| Flight     | +1           | +2               |\n\n"
+            "**If the MFL is not met, the Chief Operator/Deputy Chief Operator must inform:**\n"
+            "- CE (for Ops)\n"
+            "- Chief Expert (CX) (for manpower resourcing)\n\n"
+            "Details to be provided:\n"
+            "- Reason for the shortfall\n"
+            "- Personnel involved\n"
+            "- Current Ops situation\n\n"
+            "**Interim Mitigation Measures:**\n"
+            "- Reallocate assignments while awaiting late arrivals or activated personnel.\n"
+            "- CE/CX may retain personnel from the previous shift if required."
         ),
         "item2": (
             "**PERSONNEL ACTIVATION**\n\n"
-            "Personnel may be recalled from OIL, OFF, or Leave to maintain MFL.\n\n"
-            "**Priority Order:**\n"
-            "1. OIL → own shift\n"
-            "2. Standby → last recalled\n"
-            "3. Working OFF shift → working day\n"
-            "4. OFF shift → OFF day\n"
-            "5. FPUL / Leave → with OC/CO approval\n\n"
-            "**Reporting Time:**\n"
-            "- Within 2 hours of activation."
+            "B Coy personnel may be recalled (activated) from Off-In-Lieu (OIL), OFF, and vacation leave to maintain the MFL caused by unforeseen events and to meet ad-hoc Ops exigencies.\n\n"
+            "**Activation Priority for Personnel**\n\n"
+            "1. OIL - Back to own shift on their default working day. Includes post-regimental duty rest/OIL.\n"
+            "2. Standby (Planned/Pre-arranged) - Last man recalled.\n"
+            "3. Working Personnel OFF Shift - Recalled on default working day to another shift.\n"
+            "4. OFF Shift - Recalled on default OFF day.\n"
+            "5. OFF Shift (if Priority 1-4 exhausted) - Recall personnel from OFF day.\n"
+            "6. Full Pay Unrecorded Leave (FPUL) - Recall with OC approval.\n"
+            "7. Vacation Leave (Local) - OC approval needed.\n"
+            "8. Vacation Leave (Overseas) - CO approval needed.\n"
+            "9. VIPER - At discretion of Chief Opr or CX.\n\n"
+            "**Reporting Time upon Activation:**\n"
+            "Personnel recalled must report to the OPS room within **2 hours** of activation."
         ),
         "item3": (
             "**CONTACTABILITY**\n\n"
-            "All personnel must remain contactable.\n"
-            "- Primary Standby: respond before **0630hrs** (Day) or **1230hrs** (Stagger/VIPER).\n"
-            "- Uncontactable personnel face disciplinary action.\n"
-            "- Standby cut-off: **1200hrs** unless adjusted by CX."
+            "All personnel must remain contactable at all times, particularly Standby personnel.\n"
+            "- Primary Standby personnel must respond before **0630hrs** (for Day shift activation) and **1230hrs** (for Stagger/VIPER shift activation).\n"
+            "- Personnel who are uncontactable upon activation will face disciplinary actions.\n\n"
+            "**Standby Activation Cut-off Time:**\n"
+            "- Default cut-off is **1200hrs**. CX may adjust based on operational needs while ensuring adequate work-rest cycles."
         ),
         "item4": (
             "**ATTENDANCE AND ACCOUNTABILITY**\n\n"
-            "Report on time:\n"
-            "- Day: 0745hrs\n"
-            "- Stagger: 1445hrs\n"
-            "- VIPER: 2145hrs\n\n"
-            "Late arrivals face disciplinary action.\n"
-            "Absence without approval is a chargeable offense."
+            "**Reporting Time:**\n"
+            "- Day Shift: 0745hrs\n"
+            "- Stagger Shift: 1445hrs\n"
+            "- VIPER Shift: 2145hrs\n\n"
+            "Late arrivals (Day: 0746hrs, Stagger: 1446hrs, VIPER: 2146hrs) will face disciplinary actions.\n"
+            "Failure to report for duty without official leave is a chargeable offense."
         ),
         "item5": (
             "**LEAVE MANAGEMENT**\n\n"
-            "Plan leave early — first-come-first-served.\n"
-            "Last man requesting leave can be recalled.\n"
-            "Standby coverage from OFF shift allowed."
+            "Personnel are encouraged to forecast and plan leave early.\n"
+            "- Leave is allocated on a **first-come-first-served basis**.\n"
+            "- The last person requesting leave (Last Man) will be recallable to maintain MFL.\n"
+            "- Alternatively, personnel may arrange for Standby coverage from the Off shift."
         ),
         "item6": "Details about Item 6...",
         "item7": "Details about Item 7...",
-        "item8": "Details about Item 8..."
+        "item8": "Details about Item 8...",
     }
 
     back_button = InlineKeyboardMarkup([
@@ -124,21 +136,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ========================================================
-# 5️⃣  Run Bot (Async, Safe Restart)
+# 5️⃣  Run the bot (Render-Optimized)
 # ========================================================
-async def run_bot():
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
-
-    print("🚀 Cleaning old webhooks...")
-    await application.bot.delete_webhook(drop_pending_updates=True)
-
-    print("✅ Bot is now running...")
-    await application.run_polling(allowed_updates=Update.ALL_TYPES)
-
 def main():
-    keep_alive()
+    # Run Flask keep_alive server in background
+    threading.Thread(target=keep_alive).start()
+
+    async def run_bot():
+        application = Application.builder().token(TOKEN).build()
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CallbackQueryHandler(button_handler))
+
+        print("🚀 Cleaning old webhooks...")
+        await application.bot.delete_webhook(drop_pending_updates=True)
+
+        print("✅ Bot is now running...")
+        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+
     while True:
         try:
             asyncio.run(run_bot())
