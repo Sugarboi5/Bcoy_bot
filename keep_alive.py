@@ -1,24 +1,22 @@
 from flask import Flask
 from threading import Thread
-import requests, time
 
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "I'm alive!"
+    return "Bot is running!", 200
+
+@app.route('/health')
+def health():
+    return "OK", 200
 
 def run():
-    app.run(host='0.0.0.0', port=5000)
-
-def ping_self():
-    while True:
-        try:
-            requests.get("https://bcoy-bot.onrender.com")  # 👈 change this
-        except:
-            pass
-        time.sleep(240)  # every 4 minutes
+    """Run Flask server on port 5000"""
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
 
 def keep_alive():
-    Thread(target=run).start()
-    Thread(target=ping_self).start()
+    """Start Flask server in background thread"""
+    server_thread = Thread(target=run, daemon=True)
+    server_thread.start()
+    print("✅ Keep-alive server started on port 5000")

@@ -1,6 +1,6 @@
 import os
 import time
-import requests
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -8,18 +8,27 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
-from telegram.error import NetworkError
-from keep_alive import keep_alive  # Keeps the Render service active
+from telegram.error import NetworkError, TimedOut, RetryAfter
+from keep_alive import keep_alive
 
 # ========================================================
-# 1️⃣  Load BOT_TOKEN safely
+# Configure Logging
+# ========================================================
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# ========================================================
+# Load BOT_TOKEN safely
 # ========================================================
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ BOT_TOKEN not found in environment variables!")
 
 # ========================================================
-# 2️⃣  Inline Keyboard Menu
+# Inline Keyboard Menu
 # ========================================================
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
@@ -34,26 +43,37 @@ def main_menu_keyboard():
     ])
 
 # ========================================================
-# 3️⃣  Start Command
+# Start Command
 # ========================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Choose an item from the menu:",
-        reply_markup=main_menu_keyboard()
-    )
+    try:
+        await update.message.reply_text(
+            "Choose an item from the menu:",
+            reply_markup=main_menu_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Error in start command: {e}")
 
 # ========================================================
-# 4️⃣  Button Handler
+# Button Handler
 # ========================================================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+
+    try:
+        await query.answer()
+    except Exception as e:
+        logger.error(f"Error answering callback query: {e}")
+        return
 
     if query.data == "menu":
-        await query.edit_message_text(
-            text="Choose an item from the menu:",
-            reply_markup=main_menu_keyboard()
-        )
+        try:
+            await query.edit_message_text(
+                text="Choose an item from the menu:",
+                reply_markup=main_menu_keyboard()
+            )
+        except Exception as e:
+            logger.error(f"Error showing menu: {e}")
         return
 
     responses = {
@@ -72,43 +92,93 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
 
     response = responses.get(query.data, "Invalid selection.")
-    await query.edit_message_text(
-        text=response,
-        reply_markup=back_button,
-        parse_mode="Markdown"
-    )
+
+    try:
+        await query.edit_message_text(
+            text=response,
+            reply_markup=back_button,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Error editing message: {e}")
 
 # ========================================================
-# 5️⃣  Run the bot (Render-Optimized)
+# Error Handler
+# ========================================================
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Log errors and handle them gracefully"""
+    logger.error(f"Update {update} caused error {context.error}")
+
+# ========================================================
+# Run the bot (Render-Optimized)
 # ========================================================
 def main():
-    # Start Flask keep-alive server (only once!)
+    # Start Flask keep-alive server
+    logger.info("Starting keep-alive server...")
     keep_alive()
 
-    # Clean any old webhook
-    print("✅ Cleaning any existing webhooks...")
-    try:
-        requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
-    except Exception as e:
-        print("⚠️ Could not delete webhook:", e)
+    # Build application
+    application = (
+        Application.builder()
+        .token(TOKEN)
+        .read_timeout(30)
+        .write_timeout(30)
+        .connect_timeout(30)
+        .pool_timeout(30)
+        .build()
+    )
 
-    # Start the bot application
-    application = Application.builder().token(TOKEN).build()
+    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_error_handler(error_handler)
 
-    print("🚀 Bot is now running...")
+    logger.info("🚀 Bot is starting...")
 
-    # Keep polling forever with auto-restart
+    # Run with proper error handling
+    max_retries = 5
+    retry_count = 0
+
     while True:
         try:
-            application.run_polling(allowed_updates=Update.ALL_TYPES)
-        except NetworkError:
-            print("🌐 Network error, retrying in 10s...")
+            logger.info(f"Starting polling (attempt {retry_count + 1})...")
+            application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+                poll_interval=1.0,
+                timeout=30
+            )
+            # If we get here, polling stopped cleanly
+            logger.warning("Polling stopped, restarting...")
+            retry_count = 0
+
+        except RetryAfter as e:
+            # Telegram rate limit
+            wait_time = e.retry_after + 2
+            logger.warning(f"⏳ Rate limited. Waiting {wait_time}s...")
+            time.sleep(wait_time)
+            retry_count = 0
+
+        except TimedOut:
+            logger.warning("⏱️ Request timed out, retrying in 5s...")
+            time.sleep(5)
+            retry_count += 1
+
+        except NetworkError as e:
+            logger.error(f"🌐 Network error: {e}, retrying in 10s...")
             time.sleep(10)
+            retry_count += 1
+
         except Exception as e:
-            print(f"⚠️ Bot crashed: {e}")
-            time.sleep(10)
+            logger.error(f"⚠️ Unexpected error: {e}")
+            retry_count += 1
+
+            if retry_count >= max_retries:
+                logger.critical("❌ Max retries reached, waiting 60s before retry...")
+                time.sleep(60)
+                retry_count = 0
+            else:
+                time.sleep(15)
 
 if __name__ == "__main__":
     main()
