@@ -3,6 +3,7 @@ import sys
 import time
 import logging
 import asyncio
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -38,6 +39,12 @@ if not TOKEN:
 logger.info("✅ BOT_TOKEN loaded successfully")
 
 # ========================================================
+# Global variables for health monitoring
+# ========================================================
+last_update_time = datetime.now()
+is_bot_healthy = True
+
+# ========================================================
 # Inline Keyboard Menu
 # ========================================================
 def main_menu_keyboard():
@@ -57,23 +64,29 @@ def main_menu_keyboard():
 # ========================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
+    global last_update_time
+    last_update_time = datetime.now()
+
     try:
         await update.message.reply_text(
             "Choose an item from the menu:",
             reply_markup=main_menu_keyboard()
         )
-        logger.info(f"User {update.effective_user.id} started the bot")
+        logger.info(f"✅ User {update.effective_user.id} started the bot")
     except Exception as e:
-        logger.error(f"Error in start command: {e}")
+        logger.error(f"❌ Error in start command: {e}")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button callbacks"""
+    global last_update_time
+    last_update_time = datetime.now()
+
     query = update.callback_query
 
     try:
         await query.answer()
     except Exception as e:
-        logger.error(f"Error answering callback: {e}")
+        logger.error(f"❌ Error answering callback: {e}")
         return
 
     # Back to menu
@@ -83,9 +96,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text="Choose an item from the menu:",
                 reply_markup=main_menu_keyboard()
             )
-            logger.info(f"User {update.effective_user.id} returned to menu")
+            logger.info(f"✅ User {update.effective_user.id} returned to menu")
         except Exception as e:
-            logger.error(f"Error showing menu: {e}")
+            logger.error(f"❌ Error showing menu: {e}")
         return
 
     # Response mapping
@@ -112,23 +125,59 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_button,
             parse_mode="Markdown"
         )
-        logger.info(f"User {update.effective_user.id} selected {query.data}")
+        logger.info(f"✅ User {update.effective_user.id} selected {query.data}")
     except Exception as e:
-        logger.error(f"Error editing message: {e}")
+        logger.error(f"❌ Error editing message: {e}")
 
 # ========================================================
 # Error Handler
 # ========================================================
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Log errors"""
-    logger.error(f"Exception while handling an update: {context.error}")
+    logger.error(f"❌ Exception while handling an update: {context.error}")
+
+# ========================================================
+# Health Check Watchdog
+# ========================================================
+async def health_watchdog(app: Application):
+    """Monitor bot health and restart polling if needed"""
+    global last_update_time, is_bot_healthy
+
+    logger.info("🔍 Health watchdog started")
+
+    while True:
+        try:
+            await asyncio.sleep(300)  # Check every 5 minutes
+
+            # Check if we've received updates recently
+            time_since_update = (datetime.now() - last_update_time).total_seconds()
+
+            if time_since_update > 600:  # No updates for 10 minutes
+                logger.warning(f"⚠️ No updates received for {int(time_since_update)}s - bot may be stalled")
+                logger.info("🔄 Attempting to refresh connection...")
+
+                # Try to get bot info to check connection
+                try:
+                    bot_info = await app.bot.get_me()
+                    logger.info(f"✅ Bot connection OK: @{bot_info.username}")
+                    last_update_time = datetime.now()  # Reset timer
+                except Exception as e:
+                    logger.error(f"❌ Bot connection test failed: {e}")
+                    is_bot_healthy = False
+                    raise  # Trigger restart
+            else:
+                logger.info(f"✅ Bot healthy - last update {int(time_since_update)}s ago")
+
+        except Exception as e:
+            logger.error(f"⚠️ Health watchdog error: {e}")
+            await asyncio.sleep(60)
 
 # ========================================================
 # Application Setup
 # ========================================================
 def create_application():
     """Create and configure the Application"""
-    logger.info("Creating application...")
+    logger.info("📱 Creating application...")
 
     try:
         # Build application with all necessary timeouts
@@ -139,6 +188,10 @@ def create_application():
             .write_timeout(30)
             .connect_timeout(30)
             .pool_timeout(30)
+            .get_updates_read_timeout(30)
+            .get_updates_write_timeout(30)
+            .get_updates_connect_timeout(30)
+            .get_updates_pool_timeout(30)
             .build()
         )
 
@@ -155,17 +208,22 @@ def create_application():
         raise
 
 # ========================================================
-# Main Function with Retry Logic
+# Main Bot Loop with Auto-Restart
 # ========================================================
 async def run_bot():
     """Run the bot with automatic restart on errors"""
 
     max_consecutive_errors = 5
     error_count = 0
+    restart_count = 0
 
     while True:
         app = None
+        watchdog_task = None
+
         try:
+            logger.info(f"🚀 Starting bot (restart #{restart_count})...")
+
             # Create application
             app = create_application()
 
@@ -177,38 +235,54 @@ async def run_bot():
             await app.start()
             logger.info("✅ Application started")
 
-            # Start polling with proper parameters
-            logger.info("🚀 Starting polling...")
-
-            # Get updates manually to avoid Updater issues
+            # Start polling
+            logger.info("🔄 Starting polling...")
             updater = app.updater
             await updater.start_polling(
                 drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES
+                allowed_updates=Update.ALL_TYPES,
+                poll_interval=1.0
             )
 
             logger.info("✅ Bot is now running!")
             error_count = 0  # Reset error count on successful start
 
-            # Keep running
-            while True:
+            # Start health watchdog in background
+            watchdog_task = asyncio.create_task(health_watchdog(app))
+
+            # Keep running - check every second if still healthy
+            while is_bot_healthy:
                 await asyncio.sleep(1)
+
+            # If we get here, watchdog detected an issue
+            logger.warning("⚠️ Health check failed, restarting bot...")
+            raise Exception("Health check failure")
 
         except RetryAfter as e:
             wait_time = int(e.retry_after) + 2
-            logger.warning(f"⏳ Rate limited. Waiting {wait_time}s...")
+            logger.warning(f"⏳ Rate limited by Telegram. Waiting {wait_time}s...")
             await asyncio.sleep(wait_time)
             error_count = 0
 
         except TimedOut:
             logger.warning("⏱️ Request timed out")
             error_count += 1
-            await asyncio.sleep(5)
+            if error_count >= max_consecutive_errors:
+                logger.error(f"❌ Too many timeouts ({error_count}), waiting 120s...")
+                await asyncio.sleep(120)
+                error_count = 0
+            else:
+                await asyncio.sleep(10)
 
         except NetworkError as e:
             logger.error(f"🌐 Network error: {e}")
             error_count += 1
-            await asyncio.sleep(10)
+            if error_count >= max_consecutive_errors:
+                logger.error(f"❌ Too many network errors ({error_count}), waiting 120s...")
+                await asyncio.sleep(120)
+                error_count = 0
+            else:
+                await asyncio.sleep(15)
 
         except KeyboardInterrupt:
             logger.info("🛑 Bot stopped by user")
@@ -219,43 +293,58 @@ async def run_bot():
             error_count += 1
 
             if error_count >= max_consecutive_errors:
-                logger.critical(f"❌ Too many errors ({error_count}), waiting 120s...")
-                await asyncio.sleep(120)
+                logger.critical(f"❌ Too many errors ({error_count}), waiting 180s...")
+                await asyncio.sleep(180)
                 error_count = 0
             else:
-                await asyncio.sleep(15)
+                await asyncio.sleep(20)
 
         finally:
+            # Cancel watchdog
+            if watchdog_task and not watchdog_task.done():
+                watchdog_task.cancel()
+                try:
+                    await watchdog_task
+                except asyncio.CancelledError:
+                    pass
+
             # Clean shutdown
             if app:
                 try:
-                    logger.info("Shutting down application...")
+                    logger.info("🔄 Shutting down application...")
                     if app.updater and app.updater.running:
                         await app.updater.stop()
                     await app.stop()
                     await app.shutdown()
                     logger.info("✅ Application shut down cleanly")
                 except Exception as e:
-                    logger.error(f"Error during shutdown: {e}")
+                    logger.error(f"❌ Error during shutdown: {e}")
+
+            # Increment restart counter
+            restart_count += 1
+
+            # Wait before restart
+            logger.info("⏳ Waiting 5s before restart...")
+            await asyncio.sleep(5)
 
 # ========================================================
 # Entry Point
 # ========================================================
 def main():
     """Main entry point"""
-    logger.info("=" * 50)
+    logger.info("=" * 60)
     logger.info("🤖 Telegram Bot Starting...")
-    logger.info("=" * 50)
+    logger.info("=" * 60)
 
     # Start keep-alive server
-    logger.info("Starting keep-alive server...")
+    logger.info("⚡ Starting keep-alive server...")
     keep_alive()
 
     # Run the bot
     try:
         asyncio.run(run_bot())
     except KeyboardInterrupt:
-        logger.info("👋 Bot stopped")
+        logger.info("👋 Bot stopped by user")
     except Exception as e:
         logger.error(f"❌ Fatal error: {e}", exc_info=True)
         sys.exit(1)
