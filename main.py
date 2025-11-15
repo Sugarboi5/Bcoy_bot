@@ -137,40 +137,56 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"❌ Exception while handling an update: {context.error}")
 
 # ========================================================
-# Health Check Watchdog
+# IMPROVED Health Check Watchdog - More Aggressive
 # ========================================================
 async def health_watchdog(app: Application):
-    """Monitor bot health and restart polling if needed"""
+    """Monitor bot health and restart polling if needed - IMPROVED VERSION"""
     global last_update_time, is_bot_healthy
 
-    logger.info("🔍 Health watchdog started")
+    logger.info("🔍 Health watchdog started (improved version)")
+    consecutive_stalls = 0
 
     while True:
         try:
-            await asyncio.sleep(300)  # Check every 5 minutes
+            await asyncio.sleep(180)  # Check every 3 minutes (more frequent)
 
             # Check if we've received updates recently
             time_since_update = (datetime.now() - last_update_time).total_seconds()
 
-            if time_since_update > 600:  # No updates for 10 minutes
-                logger.warning(f"⚠️ No updates received for {int(time_since_update)}s - bot may be stalled")
-                logger.info("🔄 Attempting to refresh connection...")
+            # More aggressive threshold: 8 minutes instead of 10
+            if time_since_update > 480:  # 8 minutes
+                consecutive_stalls += 1
+                logger.warning(f"⚠️ No updates received for {int(time_since_update)}s (check #{consecutive_stalls})")
 
                 # Try to get bot info to check connection
                 try:
                     bot_info = await app.bot.get_me()
-                    logger.info(f"✅ Bot connection OK: @{bot_info.username}")
-                    last_update_time = datetime.now()  # Reset timer
+                    logger.info(f"🔄 Bot connection OK: @{bot_info.username}")
+
+                    # IMPROVED: Even if connection OK, restart after 2 consecutive stalls
+                    if consecutive_stalls >= 2:
+                        logger.error(f"❌ Bot stalled for too long ({consecutive_stalls} checks) - forcing restart!")
+                        is_bot_healthy = False
+                        raise Exception("Forced restart due to prolonged inactivity")
+                    else:
+                        logger.info(f"✅ Bot responsive, continuing monitoring (stall check {consecutive_stalls}/2)")
+                        last_update_time = datetime.now()  # Reset timer to give it more time
+
                 except Exception as e:
                     logger.error(f"❌ Bot connection test failed: {e}")
                     is_bot_healthy = False
                     raise  # Trigger restart
             else:
+                # Reset stall counter if we got recent updates
+                if consecutive_stalls > 0:
+                    logger.info(f"✅ Bot recovered - resetting stall counter")
+                consecutive_stalls = 0
                 logger.info(f"✅ Bot healthy - last update {int(time_since_update)}s ago")
 
         except Exception as e:
-            logger.error(f"⚠️ Health watchdog error: {e}")
-            await asyncio.sleep(60)
+            logger.error(f"⚠️ Health watchdog triggering restart: {e}")
+            is_bot_healthy = False
+            return  # Exit watchdog to trigger restart
 
 # ========================================================
 # Application Setup
@@ -224,6 +240,11 @@ async def run_bot():
         try:
             logger.info(f"🚀 Starting bot (restart #{restart_count})...")
 
+            # Reset health flag
+            global is_bot_healthy, last_update_time
+            is_bot_healthy = True
+            last_update_time = datetime.now()
+
             # Create application
             app = create_application()
 
@@ -256,7 +277,7 @@ async def run_bot():
 
             # If we get here, watchdog detected an issue
             logger.warning("⚠️ Health check failed, restarting bot...")
-            raise Exception("Health check failure")
+            raise Exception("Health check failure - automatic restart")
 
         except RetryAfter as e:
             wait_time = int(e.retry_after) + 2
@@ -333,7 +354,7 @@ async def run_bot():
 def main():
     """Main entry point"""
     logger.info("=" * 60)
-    logger.info("🤖 Telegram Bot Starting...")
+    logger.info("🤖 Telegram Bot Starting... (Improved Watchdog v2)")
     logger.info("=" * 60)
 
     # Start keep-alive server
