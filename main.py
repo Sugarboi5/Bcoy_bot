@@ -42,7 +42,9 @@ logger.info("✅ BOT_TOKEN loaded successfully")
 # Global variables for health monitoring
 # ========================================================
 last_update_time = datetime.now()
+last_successful_check = datetime.now()
 is_bot_healthy = True
+connection_failures = 0
 
 # ========================================================
 # Inline Keyboard Menu
@@ -137,55 +139,57 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"❌ Exception while handling an update: {context.error}")
 
 # ========================================================
-# FINAL FIXED Health Watchdog - No More False Recoveries!
+# SMART Health Watchdog v4 - Only Restarts on REAL Problems
 # ========================================================
 async def health_watchdog(app: Application):
     """
-    Monitor bot health and force restart when stalled.
-    FIXED: No longer resets timer on connection test!
+    Monitor bot health intelligently.
+    Only restart on ACTUAL problems, not lack of user activity.
     """
-    global last_update_time, is_bot_healthy
+    global last_update_time, last_successful_check, is_bot_healthy, connection_failures
 
-    logger.info("🔍 Health watchdog started (FINAL FIXED VERSION v3)")
-    consecutive_stalls = 0
+    logger.info("🔍 Smart Health Watchdog started (v4 - Production Ready)")
 
     while True:
         try:
-            await asyncio.sleep(180)  # Check every 3 minutes
+            await asyncio.sleep(300)  # Check every 5 minutes
 
-            # Check if we've received updates recently
-            time_since_update = (datetime.now() - last_update_time).total_seconds()
+            # Test Telegram connection
+            try:
+                bot_info = await app.bot.get_me()
+                logger.info(f"✅ Connection healthy: @{bot_info.username}")
+                last_successful_check = datetime.now()
+                connection_failures = 0  # Reset failure counter
 
-            # Stall threshold: 6 minutes (more aggressive)
-            if time_since_update > 360:  # 6 minutes
-                consecutive_stalls += 1
-                logger.warning(f"⚠️ No updates for {int(time_since_update)}s (stall check #{consecutive_stalls})")
+                # Log activity status for transparency
+                time_since_update = (datetime.now() - last_update_time).total_seconds()
+                if time_since_update > 3600:  # 1 hour
+                    logger.info(f"ℹ️ Quiet period: No user activity for {int(time_since_update/60)} minutes (normal)")
+                else:
+                    logger.info(f"✅ Active: Last user activity {int(time_since_update)}s ago")
 
-                # Test connection for logging purposes only
-                try:
-                    bot_info = await app.bot.get_me()
-                    logger.info(f"📡 Connection test: @{bot_info.username} reachable")
-                except Exception as e:
-                    logger.error(f"❌ Connection test failed: {e}")
+            except Exception as e:
+                connection_failures += 1
+                logger.error(f"❌ Connection test failed (attempt {connection_failures}/3): {e}")
 
-                # CRITICAL FIX: Force restart after just 1 stall detection!
-                # Don't trust connection test - if no updates, something is wrong
-                if consecutive_stalls >= 1:
-                    logger.error(f"❌ BOT STALLED - No updates for {int(time_since_update)}s - FORCING RESTART NOW!")
+                # Only restart after 3 consecutive connection failures
+                if connection_failures >= 3:
+                    time_since_success = (datetime.now() - last_successful_check).total_seconds()
+                    logger.error(f"🚨 CRITICAL: Connection failed 3 times in a row ({int(time_since_success)}s since last success)")
+                    logger.error("🔄 Bot may be frozen - forcing restart...")
                     is_bot_healthy = False
-                    raise Exception(f"Forced restart: No updates for {int(time_since_update)}s")
-
-            else:
-                # Only reset counter if we ACTUALLY got recent updates
-                if consecutive_stalls > 0:
-                    logger.info(f"✅ Bot recovered - got update {int(time_since_update)}s ago")
-                consecutive_stalls = 0
-                logger.info(f"✅ Bot healthy - last update {int(time_since_update)}s ago")
+                    raise Exception(f"Connection failed 3 times - forcing restart")
+                else:
+                    logger.warning(f"⚠️ Connection issue detected, will retry (failure {connection_failures}/3)")
 
         except Exception as e:
-            logger.error(f"🔄 Watchdog triggering restart: {e}")
-            is_bot_healthy = False
-            return  # Exit watchdog to trigger restart
+            if "Connection failed 3 times" in str(e):
+                logger.error(f"🔄 Watchdog triggering restart due to connection failures")
+                is_bot_healthy = False
+                return
+            else:
+                logger.error(f"⚠️ Watchdog error: {e}")
+                await asyncio.sleep(60)
 
 # ========================================================
 # Application Setup
@@ -239,10 +243,12 @@ async def run_bot():
         try:
             logger.info(f"🚀 Starting bot (restart #{restart_count})...")
 
-            # Reset health flag
-            global is_bot_healthy, last_update_time
+            # Reset health flags
+            global is_bot_healthy, last_update_time, last_successful_check, connection_failures
             is_bot_healthy = True
             last_update_time = datetime.now()
+            last_successful_check = datetime.now()
+            connection_failures = 0
 
             # Create application
             app = create_application()
@@ -264,7 +270,7 @@ async def run_bot():
                 poll_interval=1.0
             )
 
-            logger.info("✅ Bot is now running!")
+            logger.info("✅ Bot is now running! (Smart watchdog active)")
             error_count = 0  # Reset error count on successful start
 
             # Start health watchdog in background
@@ -274,9 +280,9 @@ async def run_bot():
             while is_bot_healthy:
                 await asyncio.sleep(1)
 
-            # If we get here, watchdog detected an issue
-            logger.warning("⚠️ Watchdog detected issue - restarting bot...")
-            raise Exception("Watchdog-triggered restart")
+            # If we get here, watchdog detected a real problem
+            logger.warning("⚠️ Real issue detected - restarting bot...")
+            raise Exception("Watchdog-triggered restart due to connection failures")
 
         except RetryAfter as e:
             wait_time = int(e.retry_after) + 2
@@ -353,7 +359,7 @@ async def run_bot():
 def main():
     """Main entry point"""
     logger.info("=" * 60)
-    logger.info("🤖 Telegram Bot Starting... (FINAL FIXED v3)")
+    logger.info("🤖 Telegram Bot Starting... (Smart Watchdog v4)")
     logger.info("=" * 60)
 
     # Start keep-alive server
